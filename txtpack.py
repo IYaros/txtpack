@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""txtpack - рекурсивно переименовывает все файлы папки в .txt, сохраняя структуру,
-складывает дерево в out/<папка>.zip, а карту исходных имён кладёт внутрь архива.
+"""txtpack - собирает out/<папка>.zip, в котором все файлы папки (рекурсивно) имеют
+расширение .txt; структура подпапок сохраняется, карта исходных имён — extensions.txt —
+лежит внутри архива. Исходная папка не меняется.
 
 unpack смотрит только в out: распаковывает каждый архив в out/<имя архива>/ и возвращает
 исходные имена и структуру. config.ini нужен только для pack.
@@ -66,57 +67,47 @@ def leaf_name(root):
     return root.name or "archive"
 
 
-def pack(root, out_dir, tool_dir, excluded):
+def pack(root, out_dir, excluded):
     files = walk_files(root, excluded)
     if not files:
         fail("Нет файлов для обработки: %s" % root)
 
+    leaf = leaf_name(root)
     mapping = []
-    virtual = {}
-    planned = set()
-    renamed = 0
+    entries = []          # (файл на диске, имя в архиве относительно папки)
+    used = set()
     for path in files:
+        rel_old = path.relative_to(root)
         if path.suffix.lower() == ".txt":
+            entries.append((path, rel_old))
             continue
         base = path.stem or path.name
-        rel_old = path.relative_to(root)
         rel_dir = rel_old.parent
         new_name = base + ".txt"
         counter = 1
-        while (path.parent / new_name).exists() or (rel_dir / new_name) in planned:
+        while (rel_dir / new_name) in used or (path.parent / new_name).exists():
             new_name = "%s_%d.txt" % (base, counter)
             counter += 1
         rel_new = rel_dir / new_name
-        planned.add(rel_new)
-        if is_under(path, tool_dir):
-            virtual[str(rel_old)] = rel_new  # файлы утилиты: папку не трогаем, но в архиве они станут .txt
-        else:
-            path.rename(path.parent / new_name)
-            renamed += 1
+        used.add(rel_new)
+        entries.append((path, rel_new))
         mapping.append("%s\t%s" % (rel_new, rel_old))
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    leaf = leaf_name(root)
     archive = out_dir / ("%s.zip" % leaf)
     if not mapping and archive.exists():
-        fail("В папке только .txt - похоже, она уже упакована. Удалите %s, чтобы упаковать заново." % archive)
-    for old in (archive, out_dir / ("%s_txt.zip" % leaf)):
-        if old.exists():
-            old.unlink()
+        fail("В папке нет файлов с другими расширениями, а архив уже есть: %s\nУдалите его, если хотите перезаписать." % archive)
+    if archive.exists():
+        archive.unlink()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
-        for path in walk_files(root, excluded):
-            rel = path.relative_to(root)
-            entry = virtual.get(str(rel), rel)
-            zf.write(path, "%s/%s" % (leaf, entry.as_posix()))
+        for path, rel in entries:
+            zf.write(path, "%s/%s" % (leaf, rel.as_posix()))
         if mapping:
             zf.writestr(MANIFEST, "\n".join(mapping) + "\n")  # карта имён - в корне архива
 
-    if renamed:
-        print("Переименовано в .txt: %d" % renamed)
-    if virtual:
-        print("Файлов утилиты переименовано в архиве: %d" % len(virtual))
-    if not mapping:
-        print("Переименовывать нечего - в папке только .txt")
+    print("Файлов в архиве: %d" % len(entries))
+    if mapping:
+        print("Переименовано в .txt: %d" % len(mapping))
     print("Архив: %s" % archive)
 
 
@@ -193,7 +184,7 @@ def main():
             fail("В config.ini нужна папка, а не файл: %s" % root)
         if not root.is_dir():
             fail("Папка не найдена: %s" % root)
-        pack(root, out_dir, tool_dir, lambda path: is_under(path, out_dir))
+        pack(root, out_dir, lambda path: is_under(path, out_dir))
     else:
         unpack(out_dir)
 
